@@ -29,6 +29,7 @@ four owners, which never import it: the tiers depend on the reader, never the re
 from __future__ import annotations
 
 import bisect
+import fnmatch
 import os
 import re
 import shlex
@@ -36,6 +37,18 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
+from .shell_assignment_readings import (  # noqa: F401  (also re-exported for importers)
+    _GUARDED_READING_CAP,
+    _GUARDED_READING_VOLUME,
+    _UNREADABLE_GUARDED_READING,
+    _UNREADABLE_READING_MARK,
+    _co_referenced_names,
+    _is_unreadable_reading,
+    _novel_segments,
+    _ReadingBudget,
+    _resolve_local_assignment_readings,
+    _simple_commands,
+)
 from .shell_normalizer_escapes import (  # noqa: F401  (also re-exported for importers)
     _ANSI_C_QUOTE_RE,
     _decode_ansi_c_body,
@@ -104,7 +117,6 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _resolved_word_view,
     _shell_join_continuations,
     _shell_quote_walk,
-    _split_glued_operators,
     _split_push_command_segments,
     _split_shell_words,
     _strip_redirect,
@@ -117,6 +129,7 @@ from .vocabulary import (
     _SELF_NAME_RE,
     _SELF_PROGRAM_RE,
     _SELF_PROGRAM_SPELLINGS,
+    _SSH_LIKE_PROGRAMS,
 )
 
 if TYPE_CHECKING:
@@ -193,6 +206,41 @@ def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") 
     except re.error:
         return False
     return any(expandable.fullmatch(name) for name in names)
+
+
+#: Glob metacharacters a program basename can carry (shared with the argv floor).
+#: bash pathname-expands an unquoted glob against the filesystem before exec, so a
+#: word carrying one can BECOME an ssh-family program or a self-host by matching a
+#: file that exists (``/usr/bin/s?h`` matches the installed client).  The deny floor
+#: cannot consult the filesystem, so a pattern that CAN match is treated as matching.
+_GLOB_CHARS: "frozenset[str]" = frozenset("*?[")
+
+
+def _ssh_family_verb_of(token: str, verbs: "frozenset[str]") -> "str | None":
+    """The member of *verbs* that *token* names, or None -- the ONE ssh-family
+    recogniser the ssh-self floor and the over-cap fold both call (over their own
+    verb sets), so the fold's danger vocabulary is the floor's by construction,
+    glob and ``.exe`` spellings included, not a list that can drift (review)."""
+    base = _program_basename(_strip_redirect(token.strip("\"'")))
+    if base.endswith(".exe"):
+        base = base[: -len(".exe")]
+    if base in verbs:
+        return base
+    if _GLOB_CHARS.intersection(base):
+        for verb in verbs:
+            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
+                return verb
+    return None
+
+
+def _is_ssh_like_program(token: str) -> bool:
+    """True if *token* names an ssh-like program by any spelling the floor matches."""
+    return _ssh_family_verb_of(token, _SSH_LIKE_PROGRAMS) is not None
+
+
+def _is_interpreter_program(token: str) -> bool:
+    """True if *token* names a python interpreter, by any spelling the mint floor matches."""
+    return bool(_PYTHON_PROGRAM_RE.match(_program_basename(token)))
 
 
 #: How deep a nested brace group is read before it is treated as "anything".  Bash
@@ -856,8 +904,32 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
+def _is_protected_program(token: str) -> bool:
+    """True if *token*'s first word names the CLI or a kill program: a binding worth
+    keeping live against a later assignment (at worst a refusal)."""
+    program = (token.split() or [token])[0]
+    base = _program_basename(program)
+    return _is_self_program(program) or base in _KILL_BY_NAME_PROGRAMS or base == "kill"
+
+
 def _self_tokens(text_lower: str) -> "list[str]":
+    """The readings of :func:`_self_token_readings`, joined by ``;`` into one argv list."""
+    out: list[str] = []
+    for reading in _self_token_readings(text_lower):
+        out += [";"] + reading if out else reading
+    return out
+
+
+def _self_token_readings(
+    text_lower: str, budget: "_ReadingBudget | None" = None
+) -> "list[list[str]]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
+
+    One token list per reading of the command's guarded reassignments
+    (:func:`_resolve_local_assignment_readings`, spending *budget* when given);
+    the first is the command as written.  Handed out separately so a consumer
+    that spans tokens to the END of a list (the ``eval`` argument join) spans one
+    reading, not all of them.
 
     Splitting the raw text into segments first (as the pattern passes do) is
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
@@ -892,9 +964,13 @@ def _self_tokens(text_lower: str) -> "list[str]":
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
-        )
+        readings = [
+            _resolve_function_aliases(reading)
+            for reading in _resolve_local_assignment_readings(
+                normalize_shell_command(command), budget
+            )
+        ]
+        return readings[:1] + [_novel_segments(readings[0], alt) for alt in readings[1:]]
     except Exception:
         return []
 
@@ -1004,127 +1080,10 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
 
 
 def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
-    """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
-
-    Only LITERAL right-hand sides are tracked, and only assignments that appear in
-    this same command text -- there is no attempt to model the ambient environment.
-    That is enough for the evasion it closes, where the attacker must supply both
-    halves themselves.
-
-    A value that REFERENCES an already-tracked variable is expanded before it is
-    classified, so a name assembled across several assignments still resolves to the
-    literal the shell will run.
-    """
-    values: dict[str, str] = {}
+    """The readings of :func:`_resolve_local_assignment_readings`, joined by ``;``."""
     out: list[str] = []
-    # ``X=<name>;$X <verb>`` glues the assignment and the next command into ONE token,
-    # because ``shlex`` splits on whitespace only.  Split on top-level control operators
-    # first so the assignment is seen as an assignment and the use as a use.
-    tokens = _split_glued_operators(tokens)
-    for idx, token in enumerate(tokens):
-        assign = _LOCAL_ASSIGN_RE.match(token)
-        # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
-        # not a name character), so an appended PROGRAM word would be invisible here:
-        # `F=fi; F+=nd; $F <fenced> -exec cat {} +` runs a `find` this resolver would never
-        # see, while its single-assignment twin `F=fin; ${F}d` is denied. The spellings
-        # include an empty initial value, repeated appends, a quoted tail and an append
-        # feeding a braced use.
-        #
-        # Append is in the same closed class as those: the tail is a LITERAL, so what the
-        # shell will run is decided by the text alone. That is what separates it from
-        # `$(printf find)`, whose value needs a program run and is out of scope here.
-        #
-        # `_SHELL_ASSIGN_RE` is REUSED rather than a second append pattern being added:
-        # it already carries the optional ``+`` group for this exact problem on the
-        # path-tracking side, so there is one spelling of the rule in the module. It is
-        # matched only in the branch the assignment pattern rejects, which keeps this
-        # additive -- renumbering the shared pattern's groups instead would have rewritten
-        # every existing reader of them for no behavioural gain.
-        append = None if assign else _SHELL_ASSIGN_RE.match(token)
-        if append and append.group(2):
-            name, tail = append.group(1), append.group(3)
-            if values and "$" in tail:
-                # Same reason the assignment path expands first: a tail built from an
-                # already-tracked variable is a literal once expanded, and left
-                # unexpanded it reads as computed and the append is dropped.
-                tail = _VAR_USE_RE.sub(
-                    lambda m: values.get(m.group(1) or m.group(2), m.group(0)), tail
-                )
-            if _is_computed_value(tail):
-                # No literal to concatenate. Over-approximate exactly as the assignment
-                # path does: the value only matters where it is later used as a program,
-                # so a wrong guess there is a refusal rather than a bypass.
-                produced = _protected_name_in_substitution(tokens, idx)
-                if produced:
-                    values[name] = produced
-                out.append(token)
-                continue
-            piece = tail.strip("\"'").rstrip(";&|")
-            # `F=` records nothing, so an append to an unset name starts from empty
-            # rather than being discarded -- that was one of the seven spellings, and
-            # bash builds the value the same way.
-            values[name] = values.get(name, "") + piece
-            out.append(token)
-            continue
-        if assign and values and "$" in (assign.group(2) or ""):
-            # A new value may be built FROM a variable already tracked
-            # (``x=p; x=${x}kill``).  Expanding before classifying is what makes the
-            # result a literal at all: left unexpanded it looks computed, the earlier
-            # binding stays in place, and the reassignment is silently ignored.
-            expanded = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)),
-                assign.group(2),
-            )
-            if expanded != assign.group(2):
-                token = f"{assign.group(1)}={expanded}"
-                assign = _LOCAL_ASSIGN_RE.match(token)
-        if assign and _is_computed_value(assign.group(2)):
-            # ``X=$(printf <name>); $X <verb>`` COMPUTES the value, so there is no
-            # literal to carry forward.  Resolve it conservatively instead: if the
-            # substitution that produces it names a protected program anywhere, treat
-            # the variable as holding that name.  Over-approximating here is the safe
-            # direction -- the value only matters when ``$X`` is later used as a
-            # program, and a wrong guess there is a refusal, not a bypass.
-            produced = _protected_name_in_substitution(tokens, idx)
-            if produced:
-                values[assign.group(1)] = produced
-            elif _mint_verb_in_substitution(tokens, idx):
-                # ``T=$(printf <verb>); <name> $T`` computes the VERB rather than the
-                # program.  Same reasoning as the program case: the value only matters
-                # where it is later used, so binding it to the verb is the safe
-                # over-approximation.
-                values[assign.group(1)] = "token"
-            out.append(token)
-            continue
-        if assign and assign.group(2):
-            # A trailing ``;``/``&&`` belongs to the command structure, not the
-            # value: ``shlex`` splits on whitespace only, so ``X=name;`` arrives
-            # with the operator attached.
-            value = assign.group(2).strip("\"'").rstrip(";&|")
-            if value:
-                values[assign.group(1)] = value
-            out.append(token)
-            continue
-        if values and "$" in token:
-            # ``${!V}`` is INDIRECT: it expands to the value of the variable NAMED by
-            # ``V``, so resolving it takes two hops through the same table.  Done before
-            # the ordinary substitution so what remains afterwards is a plain literal.
-            # A TRANSFORMATION on a tracked variable (``${K:0}``, ``${K^^}``, ``${K/x/y}``)
-            # still expands to something derived from the tracked value, but none of those
-            # spellings are a plain ``${K}``.  Resolved to the value itself: the
-            # transformation is not modelled, and over-approximating here is the safe
-            # direction for the same reason it is for a computed value -- the result only
-            # matters where it is used as a program or verb, and a wrong guess there is a
-            # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
-            # excluded: they carry their own literal and are resolved separately.
-            token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
-            token = _INDIRECT_VAR_USE_RE.sub(
-                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
-            )
-            token = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
-            )
-        out.append(token)
+    for reading in _resolve_local_assignment_readings(tokens):
+        out += [";"] + reading if out else reading
     return out
 
 
@@ -1434,7 +1393,8 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     number, one more wrapper defeats it -- so the walk is bounded structurally: a
     payload lives inside one token of its parent and is therefore strictly shorter
     than the parent's source text, and a chain of strictly shorter strings is
-    finite.
+    finite.  The one exception, the ``eval`` join, is bounded (four times its
+    parent plus one per token) and is walked without joining again.
     """
     out: list[tuple[str, list[str]]] = []
     seen: set[str] = set()
@@ -1442,9 +1402,15 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``.
     pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    # One reading budget for the WHOLE walk: nested carriers multiply frames by the
+    # readings of every level above, so a per-frame budget bounded nothing.
+    budget = _ReadingBudget()
     while pending:
         source, parent_len, allow_join = pending.pop()
-        tokens = _self_tokens(source)
+        readings = _self_token_readings(source, budget)
+        tokens: list[str] = []
+        for reading in readings:
+            tokens += [";"] + reading if tokens else reading
         if not tokens:
             continue
         out.append((source, tokens))
@@ -1464,14 +1430,28 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # walk's seed) reshapes nothing outside a substitution the tokenizer already
         # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
         # continuation that bash keeps literal stays literal in the body too.
+        # Nested payloads are read per READING: the ``eval`` join runs to the end of
+        # the list it is given, and the readings of a guarded reassignment are many
+        # (found in review: three fillers made the join span eight readings, past its
+        # bound, and the joined ``git`` publish was dropped).
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
+        nested: list[str] = []
+        for reading in readings:
+            nested += _nested_shell_payloads(reading, allow_join=allow_join, joined_out=joined_here)
+        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
-            # parent, so it is strictly shorter than the parent's source text.
+            # parent, so it is strictly shorter than the parent's source text -- except
+            # the ``eval`` join below, which is bounded instead and is never joined
+            # again, so every chain shrinks past each join and is finite.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            # An ``eval`` join spans ONE reading: the whole token AND its pieces (twice
+            # the source), joined by spaces the source did not carry -- at most twice
+            # the parent plus one per token, with the same slack again.  Anything larger
+            # is variable EXPANSION repeated across the join, which walking again would
+            # make quadratic (a 10 KB value used 3400 times).
+            bound = 4 * parent_len + len(tokens) if payload in joined_here else parent_len
+            if len(payload) >= bound or payload in seen:
                 continue
             seen.add(payload)
             pending.append((payload, len(source), payload not in joined_here))

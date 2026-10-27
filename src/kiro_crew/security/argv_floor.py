@@ -120,7 +120,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_hosts import (  # noqa: F401
         _DNS_CANDIDATE_RE,
-        _GLOB_CHARS,
         _HOST_VERDICT_ALLOW_TTL,
         _HOST_VERDICT_CACHE,
         _HOST_VERDICT_CACHE_CAP,
@@ -171,7 +170,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_own_host_names,
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
-        _DEV_MODE_CONFIRM_FLAG,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
@@ -206,6 +204,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_ssh import (  # noqa: F401
         _ARITH_INT_LITERAL_RE,
+        _ASSIGN_TARGET_RE,
         _BINARY_COPY_VERBS,
         _BRACE_EXPANSION_CAP,
         _BRACE_GROUP_RE,
@@ -218,6 +217,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FLAT_SUBSTITUTION_RE,
         _FUNCTION_BIND_CAP,
         _FUNCTION_DEF_RE,
+        _GLUED_OPENER_ASSIGN_RE,
         _HOSTNAME_SUBSTITUTION_HINTS,
         _HOSTNAME_VARIABLE_FORMS,
         _LINE_ASSIGNMENT_RE,
@@ -274,6 +274,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     )
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
+        _GLOB_CHARS,
         _PROCESS_SUBSTITUTION_OPENERS,
         _PYTHON_INLINE_PROGRAM_FLAGS,
         _PYTHON_OPERAND_FLAGS,
@@ -306,12 +307,14 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _shell_quote_walk,
         _split_push_command_segments,
         _split_shell_words,
+        _ssh_family_verb_of,
         _strip_redirect,
         _substitution_bodies,
         _substitution_depth_delta,
         _xargs_here_string_rebuild,
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401
+        _DEV_MODE_CONFIRM_FLAG,
         _KILL_BY_NAME_PROGRAMS,
         _SELF_NAME_RE,
     )

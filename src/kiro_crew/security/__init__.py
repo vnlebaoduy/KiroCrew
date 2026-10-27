@@ -66,6 +66,7 @@ from . import (
     perm_verb_mention,
     redaction,
     rm_floor,
+    shell_assignment_syntax,
     shell_normalizer,
     stream_aws_anchor,
     vocabulary,
@@ -596,6 +597,8 @@ _EXPORTS: dict[str, str] = {
     "_shell_c_carrier_payloads": "shell_normalizer_redirects",
     "_stdin_program_text": "shell_normalizer_redirects",
     "_stdin_redirect_carriers": "shell_normalizer_redirects",
+    # shell_assignment_syntax
+    "_split_glued_operators": "shell_assignment_syntax",
     # shell_normalizer_walk
     "_AMBIGUOUS_EXPANSION_RE": "shell_normalizer_walk",
     "_CMD_SEPARATOR_RE": "shell_normalizer_walk",
@@ -639,7 +642,6 @@ _EXPORTS: dict[str, str] = {
     "_resolve_param_defaults": "shell_normalizer_walk",
     "_shell_join_continuations": "shell_normalizer_walk",
     "_shell_quote_walk": "shell_normalizer_walk",
-    "_split_glued_operators": "shell_normalizer_walk",
     "_split_push_command_segments": "shell_normalizer_walk",
     "_split_shell_words": "shell_normalizer_walk",
     "_strip_redirect": "shell_normalizer_walk",
@@ -1196,6 +1198,9 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         redact_local_paths,
         redact_path_segments,
     )
+    from kiro_crew.security.shell_assignment_syntax import (  # noqa: F401
+        _split_glued_operators,
+    )
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _FUNC_DEF_RE,
         _GLOB_CHARS_RE,
@@ -1317,7 +1322,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _shell_quote_walk,
         _ShellChar,
         _ShellWalk,
-        _split_glued_operators,
         _split_push_command_segments,
         _split_shell_words,
         _strip_redirect,

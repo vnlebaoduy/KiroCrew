@@ -57,7 +57,11 @@ from .shell_normalizer import (
     _substitution_bodies,
     _substitution_depth_delta,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
+from .vocabulary import (
+    _DEV_MODE_CONFIRM_FLAG,
+    _KILL_BY_NAME_PROGRAMS,
+    _SELF_NAME_RE,
+)
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -312,6 +316,11 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
     for tokens in _self_token_frames(text_lower):
+        # A frame the reader could not afford to enumerate carries the fail-closed
+        # reading: each consuming floor refuses on it for itself, so an operator who
+        # disabled one row is still covered by the rows that remain.
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
@@ -731,6 +740,8 @@ def _is_self_kill(text_lower: str) -> bool:
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
@@ -1018,6 +1029,8 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
@@ -1069,9 +1082,6 @@ def _is_self_skills_authority_retire(text_lower: str) -> bool:
     return _matches_self_subcommand(text_lower, ("skills", "authority-retire"))
 
 
-_DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"
-
-
 def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     """True if the operator's out-of-install confirm flag materializes after de-escaping.
 
@@ -1100,6 +1110,8 @@ def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     if "confirm" not in stripped and "install" not in stripped and "\\" not in text_lower:
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         for token in tokens:
             if _DEV_MODE_CONFIRM_FLAG in _SELF_FLOOR_QUOTE_JUNK_RE.sub(
                 "", _shell_normalizer._normalize_operand(token)

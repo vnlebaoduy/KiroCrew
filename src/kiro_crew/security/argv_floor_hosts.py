@@ -43,6 +43,7 @@ from .hosts_file import (
     _HostsFileUnreadable,
     _parse_hosts_chunks,
 )
+from .shell_normalizer import _GLOB_CHARS
 
 # fcntl/struct drive the Linux per-interface address sweep in
 # _resolve_own_host_names_into_cache.  They are imported here at module scope to
@@ -78,15 +79,6 @@ _LOOPBACK_HOST_NAMES: frozenset[str] = frozenset(
         "::1",
     }
 )
-
-
-# bash pathname-expands an unquoted glob against the filesystem before exec,
-# so a word carrying one of these can BECOME an ssh-family program or a
-# self-host by matching a file that exists (``/usr/bin/s?h`` matches the
-# installed client; ``localho?t`` matches a file the agent creates).  The
-# deny floor cannot consult the filesystem, so a pattern that CAN match is
-# treated as matching -- an over-approximation toward deny.
-_GLOB_CHARS: frozenset[str] = frozenset("*?[")
 
 
 # A hostname the textual layers cannot classify may still resolve to a

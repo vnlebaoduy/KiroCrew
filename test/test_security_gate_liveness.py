@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shlex
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from kiro_crew import security
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
+    is_denied,
     is_sensitive_bash_command,
 )
 
@@ -552,7 +554,17 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 32,798, by one line: the per-template MCP additions record joins
 #: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
 #: ``headers`` can hold an API key and only the floor masks it from a foreign child.
-_PACKAGE_LINE_BUDGET = 32_799
+#:
+#: Raised by 1,679, from 32,799, for the assignment resolver's guarded readings: a
+#: guarded or subshell-scoped reassignment is read both ways per co-referenced group,
+#: a group past the reading cap folds to allowed unless a floor recogniser fires (a
+#: function or alias read as the body it runs), past the shared reading budget the
+#: command reads as a fail-closed marker every consuming floor refuses on, a quoted
+#: carrier script is walked whole, and a glued long-name carrier's binding is read
+#: under the suffix its use names.  The resolver lives in two new modules beside the
+#: reader (``shell_assignment_syntax``, ``shell_assignment_readings``) to hold the
+#: reader under the per-file cap.  Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 34_478
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -699,3 +711,114 @@ def test_url_payload_12kb_is_fast() -> None:
     assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
     assert is_sensitive_bash_command(cmd) is None
     assert _gate_seconds(cmd) < 2.0
+
+
+def _nested_guarded_carriers(depth: int, guards: int = 6) -> str:
+    """``bash -c`` nested *depth* deep, *guards* guarded bindings per level, the
+    innermost script expanding every ancestor name."""
+    levels = [[f"n{d}{i}" for i in range(guards)] for d in range(depth)]
+    script = "echo " + " ".join(f"${n}" for level in levels for n in level)
+    for names in reversed(levels):
+        binds = "; ".join(f"{n}=1; false && {n}=2" for n in names)
+        script = f"{binds}; bash -c {shlex.quote(script)}"
+    return script
+
+
+def test_nested_guarded_carriers_share_one_reading_budget() -> None:
+    """Six guards per level yield 64 readings per frame and one nested payload per
+    reading: spent per frame, the budget let ~64 ** depth frames each pay 64
+    rescans (14 s at depth 2, the watchdog at depth 3).  One budget per walk
+    reads the tree fail-closed as soon as it is spent; a shallow tree that fits
+    is still read every way.  The bound is in the command's own units -- the
+    depth-4 tree costs no more than a few times the depth-1 one that reads every
+    reading (3x here, 62x at depth 2 before the fix) -- because a shared CI
+    worker runs this 10x slower than a quiet host and a wall-clock number alone
+    was a flake."""
+    shallow = _nested_guarded_carriers(1)
+    started = time.perf_counter()
+    assert is_denied(shallow) is None
+    every_reading = time.perf_counter() - started
+
+    deep = _nested_guarded_carriers(4)
+    assert len(deep) <= MAX_SCANNABLE_COMMAND_CHARS
+    started = time.perf_counter()
+    assert is_denied(deep) is not None
+    past_the_budget = time.perf_counter() - started
+    assert past_the_budget < 8 * every_reading + 1.0, (every_reading, past_the_budget)
+    assert is_denied(_nested_guarded_carriers(3, guards=1)) is None
+
+
+def _guarded_groups_command(groups: int) -> str:
+    return "; ".join(f"v{i}=a{'x' * 10}; false && v{i}=b; echo $v{i}" for i in range(groups))
+
+
+def test_a_long_contiguous_assignment_run_is_not_quadratic() -> None:
+    """A long ``x=1 x=2 ...; $x token`` run must scale LINEARLY, not O(n^2).
+
+    The resolver's command-position check re-walked the whole run per token
+    (~13M regex matches on a run at the scan ceiling), stalling the gate; a
+    precomputed run-start table makes it linear. Asserted as a sub-quadratic
+    RATIO rather than a wall-clock bound, so a contended CI runner does not
+    flake it (found in review).
+    """
+    import time
+
+    from kiro_crew.security import is_denied
+
+    def elapsed(n: int) -> float:
+        run = " ".join("x=%d" % (i % 2 + 1) for i in range(n)) + "; $x token"
+        start = time.perf_counter()
+        is_denied(run)
+        return time.perf_counter() - start
+
+    small = elapsed(1000)
+    big = elapsed(5000)
+    # 5x the tokens: linear ~5x, quadratic ~25x. Generous slack for constants and
+    # runner contention; a re-introduced O(n^2) walk blows straight past it.
+    assert big < 12 * small + 1.0, (small, big)
+
+
+def test_an_over_cap_group_with_many_uses_is_bounded() -> None:
+    """An over-cap group repeating a group-referencing word many times is bounded.
+
+    The fold re-enumerated its candidates per word with no memoization, stalling
+    the gate; memoization plus a per-fold work budget bounds it. Asserted as a
+    sub-quadratic RATIO so a contended CI runner does not flake it (found in review).
+    """
+    import time
+
+    from kiro_crew.security import is_denied
+
+    guards = "".join("%s=1; false && %s=2; " % (c, c) for c in "abcdefgh")
+
+    def elapsed(reps: int) -> float:
+        seg = " ".join("$a$b$c$d$e$f$g$h" for _ in range(reps))
+        start = time.perf_counter()
+        is_denied(guards + "echo " + seg)
+        return time.perf_counter() - start
+
+    small = elapsed(200)
+    big = elapsed(1200)
+    # 6x the uses: memoization keeps it near-flat, so a modest multiple catches a
+    # regression to per-word re-enumeration while tolerating runner contention.
+    assert big < 12 * small + 1.0, (small, big)
+
+
+def test_many_guarded_groups_12kb_is_fast() -> None:
+    """300 independent guarded reassignments on the deny floor: ~28 s of per-group
+    rescans before the reading budget became the command's (refused past 64
+    readings in all).  The bound is in the command's own units -- the 300-group
+    command costs no more than a few times the 63-group one that reads every
+    reading -- because a shared CI worker runs this 8x slower than a quiet host
+    and a wall-clock number alone was a flake; the per-group rescan was 20x."""
+    read_every = _guarded_groups_command(63)
+    started = time.perf_counter()
+    assert is_denied(read_every) is None
+    every_reading = time.perf_counter() - started
+
+    cmd = _guarded_groups_command(300)
+    assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
+    started = time.perf_counter()
+    assert is_denied(cmd) is not None
+    past_the_cap = time.perf_counter() - started
+    assert past_the_cap < 4 * every_reading + 1.0, (every_reading, past_the_cap)

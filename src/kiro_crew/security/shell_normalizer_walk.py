@@ -139,33 +139,6 @@ def _is_computed_value(value: str) -> bool:
     return bool(_COMPUTED_VALUE_RE.search(value))
 
 
-def _split_glued_operators(tokens: "list[str]") -> "list[str]":
-    """Split tokens on control operators glued to their neighbours.
-
-    ``shlex`` splits on whitespace only, so ``X=<name>;$X`` arrives as one token and an
-    assignment glued to the command that uses it is invisible to both.  Splitting keeps
-    the operator itself as a token so argv-boundary logic still sees it.
-    """
-    out: list[str] = []
-    for token in tokens:
-        # ONLY split a token that begins with an assignment.  Splitting any token
-        # carrying a separator would destroy a QUOTED target -- ``shlex`` has already
-        # removed the quotes, so ``pkill -f '[;]*<name>'`` arrives as the single token
-        # ``[;]*<name>`` and is indistinguishable from a real separator at this point.
-        # The reported evasion is specifically an assignment glued to its use, so that
-        # is the only shape split here.
-        if not _LOCAL_ASSIGN_RE.match(token) or not _CONTROL_OPERATOR_RE.search(token):
-            out.append(token)
-            continue
-        for piece in _CONTROL_OPERATOR_RE.split(token):
-            if piece:
-                out.append(piece)
-            out.append(";")
-        if out and out[-1] == ";":
-            out.pop()
-    return out
-
-
 # ``${VAR:-kirocrew}`` / ``${VAR:+kirocrew}`` / ``${VAR-kirocrew}`` carry a LITERAL
 # program name that the shell substitutes in.  The literal is the program that can
 # actually run, so it is what the comparison must see.

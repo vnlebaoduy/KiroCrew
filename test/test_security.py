@@ -1020,3 +1020,90 @@ class TestBareSecretKeyRedaction:
         result, warnings = redact_credentials(blob)
         assert result == blob
         assert not warnings
+
+
+class TestGuardedReadingEnumerationFailsClosed:
+    """The guarded-reassignment readings deny what the single last-value reading denies.
+
+    Two paths of the enumeration once read a mint as allowed: a redirection's ``&``
+    split one simple command into two co-reference groups, so the choices on the
+    names either side of it were never paired; and the over-cap fold did not read a
+    function or alias call as the program its body runs.
+    """
+
+    @pytest.mark.parametrize("redirect", ["2>&1", ">&2", "&>/dev/null", ">& /dev/null"])
+    def test_a_redirection_does_not_split_a_simple_command(self, redirect: str) -> None:
+        from kiro_crew.security import is_denied
+
+        command = "x=echo; false && x=kirocrew; v=doctor; false && v=token; " f"$x {redirect} $v"
+        assert is_denied(command)
+
+    def test_a_redirection_alone_still_reads_an_ordinary_command(self) -> None:
+        from kiro_crew.security import is_denied
+
+        assert is_denied("x=echo; false && x=ls; v=a; false && v=b; $x 2>&1 $v") is None
+        assert is_denied("make 2>&1 | tee build.log") is None
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            'f(){ kirocrew "$@"; };',
+            'function f { kirocrew "$@"; };',
+            "alias f=kirocrew;",
+            'g(){ kirocrew "$@"; }; f(){ g "$@"; };',
+            'f(){ { :; }; kirocrew "$@"; };',
+        ],
+    )
+    def test_the_over_cap_fold_reads_a_wrapper_as_its_body(self, wrapper: str) -> None:
+        from kiro_crew.security import is_denied
+
+        guards = "".join(f"false && v=a{i}; " for i in range(6))
+        command = f"{wrapper} v=doctor; {guards}false && v=token; f $v"
+        assert is_denied(command)
+
+    def test_a_function_body_pairs_with_its_call_site(self) -> None:
+        from kiro_crew.security import is_denied
+
+        command = 'x=echo; true && x=kirocrew; v=doctor; true && v=token; f(){ $x "$@"; }; f $v'
+        assert is_denied(command)
+
+    @pytest.mark.parametrize("sep", ["; ", "\n"])
+    @pytest.mark.parametrize("use", ["alias k=$x{sep}k token", "n=x{sep}${{!n}} token"])
+    def test_the_over_cap_fold_reads_an_alias_call_and_an_indirect_use(
+        self, sep: str, use: str
+    ) -> None:
+        from kiro_crew.security import is_denied
+
+        fillers = "".join(f'[ -n "$a{i}" ] && x=z{i}{sep}' for i in range(6))
+        command = f"shopt -s expand_aliases{sep}x=echo{sep}{fillers}true && x=kirocrew{sep}"
+        assert is_denied(command + use.format(sep=sep))
+
+    def test_the_over_cap_fold_still_allows_an_inert_wrapper(self) -> None:
+        from kiro_crew.security import is_denied
+
+        guards = "".join(f"false && v=a{i}; " for i in range(6))
+        command = f'f(){{ echo "$@"; }}; v=doctor; {guards}false && v=status; f $v'
+        assert is_denied(command) is None
+
+
+class TestSshFloorReadsASubshellReassignment:
+    """A reassignment glued to a subshell's ``(`` is read by the ssh-to-self floor.
+
+    The floor defers a reassigned name to the token resolver, and ``shlex`` keeps
+    the ``(`` on the assignment's word, so the resolver bound nothing and the floor
+    read only the outer value.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "h=x; (h=localhost; ssh $h id)",
+            "v=echo; (v=ssh; $v localhost id)",
+            "d=/tmp; (d=localhost:/etc; scp $d/passwd .)",
+            "h=x; h=localhost; ssh $h id",
+        ],
+    )
+    def test_a_subshell_reassignment_still_reaches_the_floor(self, command: str) -> None:
+        from kiro_crew.security import is_denied
+
+        assert is_denied(command)
