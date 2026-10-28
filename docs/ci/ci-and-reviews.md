@@ -1046,14 +1046,19 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 
 ### Larger runners for the review lanes and CodeQL
 
-Twenty-one `runs-on` sites draw on the `kirocrew-runners` larger-runner group
+Thirty-two `runs-on` sites draw on the `kirocrew-runners` larger-runner group
 rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
 `fork-ux-review`, and all three jobs of `fork-security-scope-review`), the five
 same-repo review lanes (`codex-review`, `claude-review`,
 `first-principles-review`, `design-review`, `ux-review`), `codeql.yml`, both
-`docker-smoke.yml` jobs, and five jobs of `release.yml` (`version`,
-`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`).
+`docker-smoke.yml` jobs, five jobs of `release.yml` (`version`,
+`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`), and
+eleven sites across the ten scheduled, dispatch and watchdog lanes
+(`ci-runner-watchdog`, `memory-benchmark`'s `accept` job,
+`merge-queue-ruleset`, `add-contributor`, `connections-l0`,
+`deferred-findings-audit`, both jobs of `fix-loop-analysis`,
+`playwright-cli-banner`, `ship-report`, `test-durations`).
 
 **Why those five release jobs.** They are the release path's coordination jobs,
 and they are here for capacity rather than isolation. A fleet route is gated on
@@ -1064,6 +1069,36 @@ release's queue. The group makes that time independent of who cut the release.
 Widening the actor list is not the alternative: the AWS webhook's actor
 admission is a security boundary, and routing is not. These jobs run on a tag,
 never on `pull_request`, so they add nothing to the group's PR-time occupancy.
+
+**Why the scheduled lanes.** They sat on `ubuntu-latest` because they cannot
+reach the CodeBuild fleet and, when they were written, the shared pool was the
+only other answer. The group is that other answer now, and the reason to prefer
+it holds for all eleven equally: the shared pool is first-come first-served
+across every Amazon GitHub org, so a lane on it has no claim on capacity at the
+moment it needs one, while the group draws on a ceiling this repository
+controls. `ci-runner-watchdog` carries a second reason on top of that one. It is
+what detects fleet saturation and orphaned runs, so a queue in front of it is
+the condition it exists to report, and arriving promptly is its whole value.
+
+The watchdog is also the one site among these eleven that pull-request traffic
+drives, and the one with a bill worth knowing about. Besides its schedule it
+runs on every `Fast
+Gate` completion, and Fast Gate fires on `pull_request` and `merge_group` as well
+as `push`, so most of its runs are those kicks rather than scheduled ticks. Most
+kicks then find that a tick already ran inside `Policy.schedule_interval`: such a
+kick does one API read, and `stand_down` cancels the run and waits up to
+`STAND_DOWN_CANCEL_WAIT_SECONDS` for GitHub to stop the step, so it holds a
+runner for about a minute while doing almost nothing. On the shared pool that
+wait is free; on the group it is billed, and it is the bulk of this lane's
+larger-runner minutes. **What those minutes buy this lane is latency, not
+efficiency.**
+
+Two properties bound the rest. The `concurrency` group is `ci-runner-watchdog`
+with `cancel-in-progress: false`, so GitHub holds the lane to one running and one
+pending run and it occupies one slot however often it is kicked; and
+`pr-readiness.yml` does not resolve this workflow, so a queued kick cannot hold a
+merge. The other ten scheduled sites fire only on `schedule` or
+`workflow_dispatch` and declare no `merge_group`.
 
 **Why the fork lanes, and why their spend is permanent.** Fork work cannot move
 to the CodeBuild fleet, and the obstruction is structural rather than unfinished
@@ -1089,8 +1124,8 @@ and it already excludes forks through the `Analyze` job's own `if`. Its load is
 also permanent for an unrelated reason: GitHub's CodeQL default setup, which
 this workflow replaced, is off, so there is no second scan to fall back to.
 
-**Every lane moved here can hold merges, so treat any stuck run as an immediate
-rollback.** `pr-readiness.yml` resolves them all through one per-lane loop:
+**Every review lane and CodeQL moved here can hold merges, so treat any stuck
+run as an immediate rollback.** `pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
 same-repo path, and on a fork pull request the fork lanes are read as
@@ -1102,8 +1137,8 @@ status pending and holds every merge for up to the 24-hour queue timeout.
 CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
-once rather than waiting to see whether the queue clears -- for any of the
-fourteen sites, not just CodeQL.
+once rather than waiting to see whether the queue clears -- for any of those
+sites, not just CodeQL.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
@@ -1129,7 +1164,17 @@ candidates for, and `scope_candidates.py validate` refuses the resulting empty
 `PR Readiness` watches, so moving it needs its own pull request and a
 `/ai-review override scope <head-sha>: <reason>`. And
 `ai-review-human-override.yml` is the mechanism that clears such a red, so it
-does not move in a change that could need it.
+does not move in a change that could need it. The four high-frequency watch
+lanes stay too -- `main-macos-failure-watch`, `scheduled-failure-watch`,
+`main-red-watch` and `main-red-pr-notice` fire on `workflow_run` thousands of
+times a day and finish in a few seconds each. A larger-runner minute is billed
+per job rounded up, so those four would dominate the group's bill while relieving
+a fraction of a slot. Firing frequency is what separates them from the eleven,
+not what waits on them: the eleven carry crons that run them daily or weekly, so
+the same rounding costs little, and the watchdog's kicks are held to one running
+and one pending run by its `concurrency` group however often Fast Gate triggers
+it. A lane that fires once per workflow completion is the case this group cannot
+absorb, whatever the lane reports.
 
 **The same-repo lanes are provisional, not permanent.** `codex-review`,
 `claude-review`, `first-principles-review`, `design-review` and `ux-review` are
@@ -1149,7 +1194,11 @@ from the shared pool's peak-to-mean ratio, which is an aggregate a subset's
 burst pattern need not match. Exceeding the cap is not a failure state, just a
 worse one than headroom: jobs queue against our own 100 slots instead of the
 shared pool, and because these lanes feed `PR Readiness` the cost of being
-wrong shows up as slower merges rather than as a broken check.
+wrong shows up as slower merges rather than as a broken check. It also shows up
+as a late watchdog: `ci-runner-watchdog` shares this group with every review
+lane, so a saturated group delays the very orphan healing a saturated fleet
+needs. Restoring that one site to `ubuntu-latest` is the first rollback to reach
+for, because arriving promptly is the whole value of that lane.
 
 Rollback is per site and needs no AWS or runner-group change: restore
 `runs-on: ubuntu-latest` on the affected line. A job dispatched to a group that
@@ -1160,9 +1209,10 @@ than waiting out the timeout.
 **Moving one of these lanes again means updating a ratchet.**
 `test/test_ci_fleet_routing_expression_parity.py` keeps `_PERMANENT_EXCEPTIONS`,
 the set of jobs that must stay off the CodeBuild fleet, and pins each one's
-expected `runs-on` so a silent re-route fails review. Three of the lanes moved
-here are in that set -- `first-principles-review`, `ux-review` and
-`design-review` -- so their expected value lives in `_HOSTED_EXCEPTION_RUNNERS`
+expected `runs-on` so a silent re-route fails review. Most of the lanes moved
+here are in that set -- the three same-repo whole-design reviews, the five
+`release.yml` jobs and all eleven
+scheduled lanes -- so their expected value lives in `_HOSTED_EXCEPTION_RUNNERS`
 rather than the `ubuntu-latest` default. Staying off the fleet is what that set
 guarantees; a larger runner is still GitHub-hosted, so the isolation contract is
 unchanged and only the pinned value moves. Change a runner on one of those jobs

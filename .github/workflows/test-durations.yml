@@ -33,7 +33,11 @@ concurrency:
 jobs:
   refresh:
     name: Refresh .test_durations
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # runs the WHOLE suite unsharded to record per-test durations.
     timeout-minutes: 90
     steps:
