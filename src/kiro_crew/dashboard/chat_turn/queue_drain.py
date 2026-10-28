@@ -575,9 +575,17 @@ async def _start_next_queued_turn(
         required_queue_id = priority_id
         allow_user_during_subagents = True
 
+    # A completion counts as a child until it has run: while it is still being
+    # handed to this tab, or waits in the queue behind another system entry, a
+    # user message held for the children must not run ahead of it. The hold still
+    # drains system entries, so that completion is what runs next.
     hold_users = bool(
         not allow_user_during_subagents
-        and subagents_hold_user_messages(state, effective_session_key(slot))
+        and (
+            slot._subagent_deliveries_inflight > 0
+            or any(item.get("kind") == SUBAGENT_COMPLETION_KIND for item in slot._queue)
+            or subagents_hold_user_messages(state, effective_session_key(slot))
+        )
     )
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
