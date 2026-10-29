@@ -19,6 +19,8 @@ import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { answerRejectedMessage } from '../../../utils/questionAnswers'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
+import { baseRevisionFor } from '../../../api/sendRace'
+import type { SteerVars } from './turnActions'
 import type { ComposerDraftStores } from './composerDrafts'
 import type { ComposerStaging } from './composerStaging'
 
@@ -33,7 +35,7 @@ interface BusyTurnControlsOptions {
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (turnActions.ts's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) => void }
+  steerMutation: { mutate: (vars: SteerVars) => void }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -113,7 +115,7 @@ export function useBusyTurnControls({
     const steerSendId = mintSendId()
     drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-    steerMutation.mutate({ text, sendId: steerSendId, slot, auto })
+    steerMutation.mutate({ text, sendId: steerSendId, slot, auto, baseAtPress: baseRevisionFor(slot) })
   }, [steerMutation, dispatch])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
@@ -244,7 +246,7 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, baseAtPress: baseRevisionFor(activeSlot) })
     // Staged session references were appended to `llmTxt` as links, so they
     // are consumed with the rest of the composer. Nothing is lost on a
     // refused, failed or unconfirmed steer: steerMutation hands the whole

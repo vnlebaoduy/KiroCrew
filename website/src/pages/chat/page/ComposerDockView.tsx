@@ -2,7 +2,7 @@ import type { NavigateFunction } from 'react-router-dom'
 import type { RefObject, Dispatch, SetStateAction, MutableRefObject } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
-import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
+import { Composer, useComposerDraftText, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { QuoteFlight } from '../../../chat-core/composer/selectionActions'
@@ -44,6 +44,7 @@ import { ProjectAwsProfileSection } from '../../../components/ProjectAwsProfile'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
 import ChatInput from '../../../components/ChatInput'
 import { useStableCallbackProps } from '../useStableCallbackProps'
+import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { pinIsWithheld } from '../../../lib/model'
@@ -69,7 +70,10 @@ import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
  * nothing the composer shows.
  */
 function StableChatInput(props: React.ComponentProps<typeof ChatInput>) {
-  return <ChatInput {...useStableCallbackProps(props)} />
+  // Recovery changes the draft store without a user edit. Carry its text across
+  // the memo boundary as a prop, so the editor cannot retain the cleared value.
+  const value = useComposerDraftText() ?? props.value
+  return <ChatInput {...useStableCallbackProps(props)} value={value} />
 }
 
 interface ComposerDockViewProps {
@@ -250,6 +254,8 @@ interface ComposerDockViewProps {
   showComposerMemoryChip: boolean
   switchMemoryMode: (newMode: MemoryMode) => Promise<void>
   composerAbove: JSX.Element
+  /** Someone else typing in this shared session: the composer is read-only. */
+  typingLock?: ComposerTypingLock | null
   composerSessionControls: ReturnType<typeof useSessionControlChips>
 }
 
@@ -273,7 +279,7 @@ export default function ComposerDockView({
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
-  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
+  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
   composerSessionControls,
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
@@ -463,7 +469,7 @@ export default function ComposerDockView({
               >
               <StableChatInput
               aboveComposer={composerAbove}
-              // No `value`: ChatInput reads the text from the root's `draft` store.
+              // StableChatInput carries the root's draft snapshot to the memoized editor.
               // `composerUserEdit` is what ChatInput calls for the user's own edits
               // (typing, paste, undo, picker inserts), never for a parent-driven
               // seed -- so it is the signal that arms the prefill hint's expiry.
@@ -483,6 +489,7 @@ export default function ComposerDockView({
               onFollowUpSend={(text?: string) => send(text)}
               // Streaming, compaction and stopping keep the input interactive (api_chat queues on slot.running and stop preserves the
               // queue, so Enter queues a follow-up during the stop window). Only a memory-mode switch locks it, the reason as placeholder.
+              typingLock={typingLock}
               disabled={memorySwitching} lockedPlaceholder={memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : undefined}
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
