@@ -1734,3 +1734,70 @@ class TestRealLocalJunctionAncestor:
         _winapi.CreateJunction(str(target), str(junction))
         blocks = build_prompt_blocks(f"see {junction}")
         assert [b["type"] for b in blocks] == ["text"]
+
+
+class TestLiteralTextIsNotAReference:
+    """A path written as literal text is ABOUT a file, not an attachment.
+
+    Code, indented code and escaped ``\\![x](...)`` markup keep their text
+    byte-for-byte and attach nothing, even when the file is readable; a path in
+    prose next to them is still inlined. ``strip_image_refs`` reads the same
+    view (``mask_literal_spans``), so both sides agree per shape.
+    """
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "run `open {p}` to view it",
+            "how to:\n```\nopen {p}\n```\nthat is all",
+            "how to:\n\n    open {p}\n\nthat is all",
+            "how to:\n\topen {p}",
+            "write \\![shot]({d}) to embed it",
+        ],
+        ids=["inline-code", "fenced", "indented", "tab-indented", "escaped-markup"],
+    )
+    def test_the_text_is_kept_and_nothing_is_attached(self, tmp_path, shape):
+        p = _png(tmp_path)
+        text = shape.format(p=p, d=p.as_posix())
+
+        blocks = build_prompt_blocks(text)
+
+        assert blocks == [{"type": "text", "text": text}]
+
+    def test_a_prose_path_beside_literal_text_is_still_inlined(self, tmp_path):
+        p = _png(tmp_path)
+        q = _distinct_png(tmp_path, "other.png", 3)
+        text = f"docs say `open {p}`, and here it is:\n{q}"
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"docs say `open {p}`, and here it is:\n[image: other.png]"
+
+    def test_a_dangling_fence_does_not_swallow_a_channel_attachment(self, tmp_path):
+        # A channel appends its attachment paths as bare lines after the user's
+        # text, so an opener the user never closed must not turn them into code.
+        p = _png(tmp_path)
+        text = f"see this:\n```python\nprint(1)\n{p}"
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"].endswith(f"[image: {p.name}]")
+
+    def test_a_delimiter_in_an_attached_file_does_not_swallow_the_image(self, tmp_path):
+        # The user's open fence would otherwise close on the attached file's
+        # delimiter line, after the image path, and make the path code.
+        from kiro_crew.messaging.attachments import IngestResult, append_attachment_context
+
+        p = _png(tmp_path)
+        result = IngestResult(
+            image_paths=[str(p)],
+            text_blocks=["[File: notes.md]\n```\nx = 1\n```\n[End of file]"],
+        )
+        text = append_attachment_context("see this:\n```python\nprint(1)", result)
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert f"print(1)\n```\n[image: {p.name}]\n" in blocks[0]["text"]
