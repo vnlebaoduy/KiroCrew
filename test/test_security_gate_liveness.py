@@ -552,7 +552,18 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 32,798, by one line: the per-template MCP additions record joins
 #: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
 #: ``headers`` can hold an API key and only the floor masks it from a foreign child.
-_PACKAGE_LINE_BUDGET = 32_799
+#: Raised by 173, from 32,799, for Outlook on the web and Slack routes in
+#: ``redaction._DOCUMENT_LINK_RE``: a mail or calendar item id is base64 with its
+#: ``+``, ``/`` and ``=`` percent-escaped, and a Slack ``client`` link joins its ids
+#: and message timestamp into one 40+ char run, so pass 3 masked both. The routes
+#: admit only the four Outlook hosts with fixed ``mail``/``calendar`` item paths and
+#: ``slack.com`` hosts with uppercase ids and digit timestamps; ``_link_pieces`` also
+#: cuts an Outlook link at each ``%XX`` escape and decodes an escaped segment, so a key
+#: written raw, between escapes, or escaped itself still voids the span, and an
+#: Outlook id must decode to one whole Exchange id (a folder or message entry id
+#: with its fixed bytes in place), so a key glued after it or inside a crafted
+#: header voids the span too. No pass widened and no threshold moved.
+_PACKAGE_LINE_BUDGET = 32_972
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
