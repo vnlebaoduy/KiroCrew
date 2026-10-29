@@ -18,8 +18,8 @@ import { createPortal, flushSync } from 'react-dom'
 import { useMotionValue, useTransform } from 'framer-motion'
 import {
   useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft,
-  COMMIT_DRAG_SHARE, COMMIT_VELOCITY, VELOCITY_MIN_SPAN_MS,
 } from '../../hooks/useDrawerSwipe'
+import { idleTrackpadDrag, moveTrackpadDrag, releaseTrackpadDrag, type TrackpadPanelDrag } from '../../hooks/trackpadPanelDrag'
 import { useMobileNavRail } from '../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { isTrapEntry } from '../../lib/routeHistoryPosition'
@@ -486,9 +486,6 @@ interface MembersPageTrackpadSwipeOptions {
   membersRootRef: MutableRefObject<HTMLDivElement | null>
 }
 
-/** The finger phase a release speed is read over, ms before the lift-off. */
-const TRACKPAD_VELOCITY_WINDOW_MS = 60
-
 /**
  * Desktop: the phone's side-panel drag, driven by a two-finger trackpad swipe.
  *
@@ -532,9 +529,7 @@ export function useMembersPageTrackpadSwipe({
   now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }
   /** The drag in progress: where it started, its travel, and the fingers'
    *  (offset, time) samples for the release speed. */
-  const drag = useRef<{
-    on: boolean; startedOpen: boolean; travel: number; base: number; samples: { x: number; t: number }[]
-  }>({ on: false, startedOpen: false, travel: 0, base: 0, samples: [] })
+  const drag = useRef<TrackpadPanelDrag>(idleTrackpadDrag())
   /** Where a settle in flight is heading (true: open), or null when none is.
    *  A new run may grab the panel mid-settle, as a phone's drag can. */
   const settleTo = useRef<boolean | null>(null)
@@ -632,41 +627,13 @@ export function useMembersPageTrackpadSwipe({
     onDragMove: (sumX, at) => {
       const d = drag.current
       if (!d.on) return
-      // Fingers moving left report a positive deltaX, which pulls the panel in.
-      const x = Math.min(d.travel, Math.max(0, d.base - sumX))
-      sidePanelX.set(x)
-      d.samples.push({ x, t: at })
-      if (d.samples.length > 32) d.samples.splice(0, d.samples.length - 32)
+      sidePanelX.set(moveTrackpadDrag(d, sumX, at))
     },
     onDragEnd: (how, at) => {
       const d = drag.current
       if (!d.on) return
       d.on = false
-      const x = sidePanelX.get()
-      // The lift-off: the last move for a recognised tail; the decision time for
-      // a gap, where fingers that had stopped before they left carry no speed.
-      const last = d.samples[d.samples.length - 1]
-      const liftAt = how === 'momentum' && last ? last.t : at
-      let first: { x: number; t: number } | undefined
-      for (let i = 0; i < d.samples.length; i++) {
-        if (liftAt - d.samples[i].t <= TRACKPAD_VELOCITY_WINDOW_MS) {
-          first = d.samples[i]
-          if (liftAt - first.t < VELOCITY_MIN_SPAN_MS && i > 0) first = d.samples[i - 1]
-          break
-        }
-      }
-      const span = first && last ? last.t - first.t : 0
-      const v = first && last && span > 0 ? (last.x - first.x) / span : 0
-      // The phone's rule, for a panel anchored right (a smaller offset is open):
-      // a flick decides; else moving past the share decides by its direction;
-      // else the panel goes back to the state it started from (or, grabbed
-      // mid-settle, the one it was heading for).
-      const dragged = Math.abs(x - d.base) / Math.max(1, d.travel)
-      let open: boolean
-      if (-v > COMMIT_VELOCITY) open = true
-      else if (v > COMMIT_VELOCITY) open = false
-      else if (dragged > COMMIT_DRAG_SHARE) open = x < d.base
-      else open = d.startedOpen
+      const { open, velocity: v } = releaseTrackpadDrag(d, sidePanelX.get(), how, at)
       settleTo.current = open
       animateDrawer(sidePanelX, open ? 0 : d.travel, () => { settleTo.current = null; land(open) }, v)
     },

@@ -605,6 +605,25 @@ phone-width window, a creation surface), so a run nobody acts on is never cancel
 relayed run may only start the close, and only while the Dashboard tab is on screen. A static Dashboard page (sandbox without
 `allow-scripts`) runs no relay, so a swipe that starts over one is the frame's.
 
+### The same swipe on the chat page's side panel
+
+The chat page plays the same drag on its right side panel off the phone
+(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
+the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
+the Mates page uses too). The panel lives in the shell's `actbar` column, an
+`auto` grid track, so the drag does not need a spacer in a page row: while it
+runs, the column becomes a window onto the panel as wide as its visible part
+(`deskSpacerW`), with the panel pinned at its left edge and clipped, so the
+panel's edge and the chat's right edge both follow the fingers. A close starts
+from the column's own docked width, measured before the swap, and the panel is
+the same element throughout (its terminals and frames live on). The settle runs
+on the main thread so the column reads every frame. The swipe is bound on the
+shell grid, which holds both the chat and the column, so a run keeps going when
+the panel arrives under the pointer. It is off for a bottom-docked panel, while
+the find pane holds the dock, and in embed frames. The chat page's frames do not
+relay their wheels, so a swipe that starts over a frame in the panel is the
+frame's.
+
 ## A panel that gains a gesture must be bound LIVE to its offset
 
 A panel moved only by a tap may serialize its offset at render time —
