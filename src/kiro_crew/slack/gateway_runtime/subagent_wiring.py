@@ -236,7 +236,15 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         msg = "\n\n".join(failures)
         msg, _ = redact_exfiltration_urls(msg)
         msg, _ = redact_credentials(msg)
-        slot.append("user", msg, "msg msg-u auto-go")
+        from kiro_crew.shared_crew.admission_gate import AUTOMATION_PRINCIPAL
+        from kiro_crew.shared_crew.attribution import stamp_principal_author
+
+        slot.append(
+            "user",
+            msg,
+            "msg msg-u auto-go",
+            meta=stamp_principal_author({}, AUTOMATION_PRINCIPAL),
+        )
         logger.info(
             "Re-triggering recovery _run_chat for %s (%d queued failures)",
             parent_key,

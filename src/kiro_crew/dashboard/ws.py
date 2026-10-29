@@ -62,6 +62,9 @@ from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: c
     broadcast_thread_reply,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew import presence as shared_presence
+from kiro_crew.shared_crew.collab import FRAME_ACTIVITY
+from kiro_crew.shared_crew.decisions import request_principal
 from kiro_crew.subagent_persistence import read_panel_records
 
 logger = logging.getLogger(__name__)
@@ -848,7 +851,16 @@ async def _serve_ws(
     # False and ``_send_ws_all`` keeps its deny-by-default behaviour.
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
+    # Shared Crew: the socket's trusted actor is the upgrade request's, as the
+    # auth middleware published it. Frames never name a principal.
+    from kiro_crew.shared_crew.identity import actor_of
+
+    ws["_shared_crew_actor"] = actor_of(request)
     ws["_allowed_events"] = allowed_events
+    # Presence is bound to the actor the auth middleware verified for this
+    # upgrade request; an activity frame never names who sent it.
+    presence_conn_id = f"ws:{id(ws)}"
+    presence_principal = request_principal(request)
     # A tab whose bundle applies ``slot_patch`` frames says so in ``?caps=``;
     # without the declaration (an older bundle, a companion window, an app
     # token) the socket keeps receiving the full ``slots`` list for every
@@ -1048,6 +1060,8 @@ async def _serve_ws(
                 # Counts are None (published as null → loading skeleton) until
                 # the first successful refresh — never an authoritative false 0.
                 data = await _status_frame(state)
+                if ws.get("_is_dashboard_user", False):
+                    shared_presence.sweep_and_broadcast(state)
                 if not ws.get("_is_dashboard_user", False):
                     # This frame is Tier 0 — always delivered, because every
                     # client needs the version (to force a reload across a
@@ -1729,6 +1743,14 @@ async def _serve_ws(
                         state.unsubscribe_subagents(ws)
                         if _replay_queue is not None:
                             _replay_queue.clear()
+                    elif msg_type == FRAME_ACTIVITY:
+                        shared_presence.handle_activity_frame(
+                            state,
+                            presence_conn_id,
+                            presence_principal,
+                            data,
+                            dashboard_user=bool(ws.get("_is_dashboard_user", False)),
+                        )
                     elif msg_type == "fold_watch":  # replaces the set; no-op unless capable
                         state.set_fold_watch(ws, data.get("slots"))
                     elif msg_type == "slot_focused":
@@ -1816,6 +1838,10 @@ async def _serve_ws(
             _replay_queue.cancel()
         note_view_closed(state, id(ws))
         note_foreground(state, id(ws), None)
+        try:
+            shared_presence.release_connection(state, presence_conn_id)
+        except Exception:
+            logger.debug("ws: presence release failed", exc_info=True)
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
     return ws

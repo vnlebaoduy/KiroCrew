@@ -937,6 +937,18 @@ async def handle_message(
     attachment files the original text refers to -- their cleanup runs when the
     OUTER call's task ends, after this nested call has returned.
     """
+    # Shared Crew fair admission: with it on, the message re-enters this handler
+    # inside its admitted run (``shared_crew.turn_gate.run_slack_message``).
+    _sc_args = dict(locals())
+    from kiro_crew.shared_crew import turn_gate as _sc_turn_gate
+
+    if (
+        _compaction_replay is None
+        and not _sc_turn_gate.in_channel_turn()
+        and await _sc_turn_gate.admission_on()
+    ):
+        await _sc_turn_gate.run_slack_message(handle_message, _sc_args)
+        return
     Stats().inc_message_received()
     _t0 = time.monotonic()
     # reply_ts is the true Slack thread timestamp (used for posting replies and
