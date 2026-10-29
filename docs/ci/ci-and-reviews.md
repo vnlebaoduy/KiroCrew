@@ -1224,6 +1224,41 @@ reading one leg per pull request off the matrix. A stuck leg rolls back the same
 way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
+**Four PR-time sites reach the group by LABEL instead, because they can execute
+somewhere the group does not exist.** `client-py.yml`'s `test`,
+`crew-image-build.yml`'s `build`, `fork-pr-label.yml`'s `label` and
+`internal-content-scan.yml`'s `scan` use
+`runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
+rather than `group:`. A fork running its own copy of one of these files on
+`push`, `schedule` or `workflow_dispatch`, and for `internal-content-scan.yml`
+any repository that onboards the shared gate by copying
+`internal-content-scan-gate.yml`, cannot reach an organization runner group; a
+job asking for a label no runner it can see carries waits out GitHub's pending
+limit before being cancelled, which is strictly worse than the shared pool, so
+the `ubuntu-latest` branch is load-bearing rather than defensive. The rename
+exposure that group targeting avoids therefore applies to these four lines:
+rename the definition and they must move with it.
+
+**Two of the four can hold merges.** `internal-content-scan.yml`'s `scan` is the
+reusable job behind `internal-content-scan-gate.yml`, whose `Internal Content
+Scan` check sits in `pr-readiness.yml`'s same-repo `workflow_specs` and in
+`merge-queue-readiness.yml`'s polled set, so a run waiting for a runner keeps
+the required `PR Readiness` status pending exactly as a review lane does -- it is
+the highest-queue-sensitivity site of the four. `client-py.yml` is polled by
+`merge-queue-readiness.yml` but not by `pr-readiness.yml`, so it holds a merge
+group and not a pull request. `crew-image-build.yml` and `fork-pr-label.yml` are
+polled by neither and hold nothing. All four fire at pull-request time (three on
+`pull_request`, `fork-pr-label.yml` on `pull_request_target`), so unlike a
+scheduled or tag-triggered site they add occupancy exactly when the review lanes
+are competing for the cap **Capacity** below describes. Size that occupancy for a
+FORK pull request at three sites, not four: `internal-content-scan-gate.yml`'s
+job-level `if` skips its `uses:` call when the head is a fork, because GitHub
+issues a fork head no OIDC token, so the `scan` job never asks for the label and
+`fork-internal-content-scan.yml` covers those PRs instead. Rollback is the plain
+whole-line replacement, since
+these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
+the affected line.
+
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
 `in_scope=true` while giving the model no shell, flow or cron surface to propose
