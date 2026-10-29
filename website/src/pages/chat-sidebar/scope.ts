@@ -294,6 +294,8 @@ export interface SidebarScope {
   foldersShelved: ReturnType<typeof useSessionFilterState>['foldersShelved']
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
+  foldersUnreadFirst: ReturnType<typeof useSessionFilterState>['foldersUnreadFirst']
+  toggleFoldersUnreadFirst: ReturnType<typeof useSessionFilterState>['toggleFoldersUnreadFirst']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
   hiddenFilters: ReturnType<typeof useSessionFilterState>['hiddenFilters']
   toggleHideFilter: ReturnType<typeof useSessionFilterState>['toggleHideFilter']
