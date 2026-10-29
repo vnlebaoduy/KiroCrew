@@ -198,6 +198,13 @@ def __init__(
     self._session_tasks = {}  # type: ignore[type-arg]
     self._pending_queue = {}
     self._socket_client = None
+    # Slack reconnect state (kiro_crew.slack.reconnect): the boot SeenCache a
+    # rebuilt socket keeps using, the workspace a connected handshake belongs
+    # to, whether any handshake connected, and the one in-flight attempt.
+    self._slack_seen = None
+    self._slack_team_id = ""
+    self._slack_ever_connected = False
+    self._slack_reconnect_task = None
     self._wecom_client = None  # set by maybe_start_wecom
     # Registry-owned live channel handles ({channel_type: client}). The
     # per-channel _<type>_client attributes are legacy mirrors kept in sync

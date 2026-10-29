@@ -665,6 +665,11 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+        # POST /api/slack/reconnect calls this; only a gateway that owns the
+        # Slack socket sets it (the API-only server leaves it None).
+        from kiro_crew.slack.reconnect import reconnect_slack
+
+        self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
 
 
 async def _init_api_server(self: GatewayOrchestrator) -> None:
@@ -865,6 +870,8 @@ async def run(self: GatewayOrchestrator) -> None:
     await cautious_boot.initialize()
 
     seen = SeenCache()
+    # Kept for a Slack reconnect, so a rebuilt socket still drops redeliveries.
+    self._slack_seen = seen
     await self._init_services()
 
     # Wire in-process embeddings (always-on) and kick background model download
@@ -1438,6 +1445,16 @@ async def run(self: GatewayOrchestrator) -> None:
     if self.dashboard_state:
         self.dashboard_state.slack_socket_connected = connected
         self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
+    if connected:
+        # Which workspace this connection belongs to, so a later reconnect can
+        # refuse to switch workspaces in place. Fire-and-forget like the probe
+        # below: boot latency is unaffected.
+        from kiro_crew.slack.reconnect import record_connected_workspace
+
+        self._slack_ever_connected = True
+        _workspace_task = asyncio.create_task(record_connected_workspace(self))
+        self._background_tasks.add(_workspace_task)
+        _workspace_task.add_done_callback(self._background_tasks.discard)
 
     # Deferred tracked-channel capability probe (fire-and-forget, never
     # awaited — boot latency is unaffected). A Slack install created before
