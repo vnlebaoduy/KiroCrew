@@ -312,6 +312,15 @@ class TestApiSpawn:
 
             monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", inherited)
 
+        # Shared Crew fair admission reads its own config off-loop too; this test
+        # counts only the memory lookups, so admission answers pass-through.
+        from kiro_crew.shared_crew import admission_entry
+        from kiro_crew.shared_crew.admission_gate import Admission
+
+        async def _passthrough(*_a, **_kw):
+            return Admission(None, "passthrough")
+
+        monkeypatch.setattr(admission_entry, "admit_subagent", _passthrough)
         response = _run(mod.api_spawn, _Req(state, body))
 
         # A parent's privacy admission reads its execution before spawn derives

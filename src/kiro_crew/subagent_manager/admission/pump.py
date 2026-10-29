@@ -1401,7 +1401,11 @@ class _PumpMixin(ManagerComponent):
         # The confirmed-start funnel: recorded only for a start that is
         # actually about to run, never for one refused or ended while waiting.
         self._manager._log_spawned(info)
-        await self._manager._run(info)
+        from kiro_crew.shared_crew.admission_gate import scope_principal_for_session
+        from kiro_crew.shared_crew.containment import principal_scope
+
+        with principal_scope(scope_principal_for_session(str(info.parent_session_key or ""))):
+            await self._manager._run(info)
 
     async def _admit_released_start_impl(self, info: SubagentInfo) -> str:
         """Wait for the pump to meter *info* -- released from the approval

@@ -925,18 +925,31 @@ class TelegramDispatcher:
                 # running it with the mode dropped is the leak the modifier
                 # exists to prevent.
                 return
-        await self._run_turn(
-            msg,
-            text,
+        # Shared Crew fair admission (``shared_crew.turn_gate``): a pass-through
+        # when admission is off; a refused message is told so in its chat.
+        from kiro_crew.shared_crew.turn_gate import capacity_note, run_channel_turn
+
+        async def _refused(reason: Any) -> None:
+            await self._notify(chat_id, capacity_note(reason), thread=reply_thread)
+
+        await run_channel_turn(
             session_key=session_key,
-            resumed_key=resumed_key,
-            route=route,
-            user_id=user_id,
-            chat_id=chat_id,
-            thread=thread,
-            reply_thread=reply_thread,
-            interpret_commands=interpret_commands,
-            drain=drain,
+            text=text,
+            automation=False,
+            run=lambda: self._run_turn(
+                msg,
+                text,
+                session_key=session_key,
+                resumed_key=resumed_key,
+                route=route,
+                user_id=user_id,
+                chat_id=chat_id,
+                thread=thread,
+                reply_thread=reply_thread,
+                interpret_commands=interpret_commands,
+                drain=drain,
+            ),
+            refused=_refused,
         )
 
     # dispatch/turn_engine.py
